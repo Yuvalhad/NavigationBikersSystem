@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="he">
+<head>
+    <meta charset="UTF-8">
+    <title>צפייה במסלול</title>
+    <link href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" rel="stylesheet"/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        #osm-map { height: 600px; width: 100%; }
+    </style>
+</head>
+<body>
+    <h1>מסלול אופניים</h1>
+    <div id="osm-map"></div>
+
+    <script>
+        // Where you want to render the map
+        var element = document.getElementById('osm-map');
+
+        // Create Leaflet map on map element
+        var map = L.map(element);
+
+        // Add OSM tile layer to the Leaflet map
+        L.tileLayer('https://{s}.tile.osm.org/{z}/{x}/{y}.png', {
+            attribution: '© <a href="http://osm.org/copyright">OpenStreetMap</a> contributors'
+        }).addTo(map);
+
+        // Use dynamic path_coords from your Flask app
+        const path = {{ path_coords|tojson|safe }};
+        const pathCoords = path.map(coord => [coord.latitude, coord.longitude]);
+        const graphData = {{ graph_data|tojson|safe }};
+        const nodes = graphData.nodes;
+        const edges = graphData.edges;
+
+        // Set map's center to the first point in pathCoords with zoom 13
+        if (pathCoords.length > 0) {
+            map.setView(pathCoords[0], 13);
+        } else {
+            // Fallback to a default location if pathCoords is empty
+            map.setView([32.0853, 34.7818], 13); // תל אביב
+        }
+
+        // Draw the route (red line)
+        const routePath = L.polyline(pathCoords, {color: 'red'}).addTo(map);
+        if (pathCoords.length > 0) {
+            map.fitBounds(routePath.getBounds());
+        }
+
+        // Markers for start and end of the route
+        if (pathCoords.length > 0) {
+            L.marker(pathCoords[0]).addTo(map).bindPopup("התחלה");
+        }
+        if (pathCoords.length > 1) {
+            L.marker(pathCoords[pathCoords.length - 1]).addTo(map).bindPopup("סיום");
+        }
+
+        // Draw the Graph: nodes
+        nodes.forEach(node => {
+            L.circleMarker([node.lat, node.lon], {
+                color: 'blue',
+                radius: 3
+            }).addTo(map).bindPopup(`צומת ${node.id}`);
+        });
+
+        // Draw the Graph: edges
+        edges.forEach(edge => {
+            const edgeCoords = [
+                [edge.from.lat, edge.from.lon],
+                [edge.to.lat, edge.to.lon]
+            ];
+            L.polyline(edgeCoords, {
+                color: 'gray',
+                weight: 1,
+                opacity: 0.5
+            }).addTo(map);
+        });
+
+        // Add the custom marker you added earlier
+        L.marker([51.5, -0.09]).addTo(map)
+            .bindPopup('A pretty CSS popup.<br> Easily customizable.')
+            .openPopup();
+    </script>
+</body>
+</html>
