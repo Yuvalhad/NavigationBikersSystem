@@ -1,0 +1,12 @@
+# Ignore virtual environment
+venv/
+
+# Ignore IDE settings
+.idea/
+
+# Ignore compiled Python files
+__pycache__/
+
+# Ignore logs
+*.log# created by virtualenv automatically
+.venv/bin
