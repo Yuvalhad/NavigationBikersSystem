@@ -2,6 +2,12 @@ import requests
 import networkx as nx
 from math import sqrt, radians, sin, cos, asin, degrees, atan
 
+import city
+from city import city_name
+import os
+import json
+import time
+
 def fetch_osm_data_bbox(min_lat, min_lon, max_lat, max_lon):
     query = f"""
     [out:json];
@@ -21,18 +27,38 @@ def fetch_osm_data_bbox(min_lat, min_lon, max_lat, max_lon):
 
 def fetch_elevation_data(coords):
     url = "https://api.open-elevation.com/api/v1/lookup"
-    locations = [{"latitude": lat, "longitude": lon} for lon, lat in coords]
-    try:
-        response = requests.post(url, json={"locations": locations}, timeout=10)
-        if response.status_code == 200:
-            results = response.json().get("results", [])
-            return {(r["longitude"], r["latitude"]): r["elevation"] for r in results}
-        else:
-            print("❌ Failed to fetch elevation data:", response.text)
-            return {}
-    except Exception as e:
-        print("❌ Elevation API error:", str(e))
-        return {}
+    results = {}
+    if os.path.exists("elevation.json"):
+        with open("elevation.json", "r") as f:
+            existing_data = json.load(f)
+    else:
+        existing_data = {}
+    def chunked(lst, size=1000):
+        for i in range(0, len(lst), size):
+            yield lst[i:i + size]
+
+    for batch in chunked(coords, 1000):
+        locations = [{"latitude": lat, "longitude": lon} for lon, lat in batch]
+        try:
+            print(f"🌍 Fetching elevation for {len(locations)} points...")
+            response = requests.post(url, json={"locations": locations}, timeout=10)
+            if response.status_code == 200:
+                data = response.json().get("results", [])
+                for item in data:
+                    coord = (item["longitude"], item["latitude"])
+                    results[coord] = item["elevation"]
+                    existing_data[str(coord)] = item["elevation"]
+                print(f"✅ Successfully fetched {len(data)} elevations.")
+            else:
+                print(f"❌ Failed to fetch elevation data (status {response.status_code}):", response.text)
+        except Exception as e:
+            print("❌ Elevation API error:", str(e))
+        with open("elevation.json", "w") as f:
+            json.dump(existing_data, f)
+
+        time.sleep(1)  # Delay to avoid getting blocked
+
+    return results
 
 def haversine_distance(coord1, coord2):
     lon1, lat1 = map(radians, coord1)
@@ -137,7 +163,7 @@ def simplify_graph(G, node_data, target_nodes=300, start_node=None, goal_node=No
                         new_elev_diff = abs(node_data[pos2]["elevation"] - node_data[pos1]["elevation"])
                         new_slope = calculate_slope(pos1, pos2, node_data[pos1]["elevation"],
                                                    node_data[pos2]["elevation"])
-                        new_weight = new_distance + new_elev_diff * 10
+                        new_weight = new_distance + new_elev_diff * 9
                         G.add_edge(pos1, pos2, streets=common_streets, distance=new_distance, slope=new_slope,
                                    weight=new_weight)
                         to_remove.append(node)

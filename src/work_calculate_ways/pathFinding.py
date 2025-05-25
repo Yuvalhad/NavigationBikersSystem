@@ -1,21 +1,23 @@
+import ast
 import networkx as nx
 import heapq
+import math
 from work_calculate_ways.geoCoding import (geocode_address,get_bbox_from_city_name)
 from work_calculate_ways.osm import (haversine_distance,
                                      calculate_slope,
                                      osm_to_graph,
                                      fetch_osm_data_bbox,
                                      connect_to_nearest_node,
-                                     simplify_graph)
+                                     simplify_graph,
+                                     fetch_elevation_data)
 import json
-import city
+from city import city_name
 
 G = None
 node_data = None
 
 def init_graph_from_city():
     global G, node_data
-    from city import city_name
     print(f"📍 Using city_name: {city_name}")
     bbox = get_bbox_from_city_name(city_name)
     if not bbox or len(bbox) != 4:
@@ -49,21 +51,108 @@ def shortest_path(G, start, goal):
     print("❌ No path found.")
     return None
 
-def flattest_path(G, start, goal, max_slope=float('inf')):
+def normalize_coordinate(coord):
+    """Normalize a coordinate tuple by rounding lat and lon to 3 decimal places."""
+    return (round(coord[0], 3), round(coord[1], 3))
+
+def get_elevation_by_exact_match(node, elevation_dict):
+    """Try to get elevation by exact coordinate match."""
+    norm_node = normalize_coordinate(node)
+    return elevation_dict.get(norm_node, None)
+
+def get_elevation_by_closest_match(node, elevation_dict):
+    """Find the closest elevation point in elevation_dict to the given node."""
+    min_dist = float('inf')
+    closest_elev = None
+    for coord, elev in elevation_dict.items():
+        dist = haversine_distance(node, coord)
+        if dist < min_dist:
+            min_dist = dist
+            closest_elev = elev
+    return closest_elev
+
+def get_elevation_smart(node, elevation_dict):
+    """Get elevation using smart lookup with exact and closest match fallback."""
+    elev = get_elevation_by_exact_match(node, elevation_dict)
+    if elev is not None:
+        return elev
+    elev = get_elevation_by_closest_match(node, elevation_dict)
+    if elev is not None:
+        return elev
+    return 0  # fallback if no elevation found
+
+def extract_coordinates_from_node(node):
+    """Extract coordinates from a node which might be a tuple or other structure."""
+    if isinstance(node, tuple) and len(node) == 2 and all(isinstance(x, (int, float)) for x in node):
+        return node
+    # Add more extraction logic if node structure changes
+    return node
+
+def flattest_path(G, start, goal, max_slope=float('inf'), elevation_dict=None):
     if start not in G or goal not in G:
         print("⚠️ Adding start or goal node to graph since not found.")
         G.add_node(start)
         G.add_node(goal)
+
+    # ⬅️ עדכן elevation לכל node מה־elevation_dict
+    if elevation_dict:
+        for node in G.nodes:
+            if node in elevation_dict:
+                G.nodes[node]["elevation"] = elevation_dict[node]
+            else:
+                print(f"⚠️ Missing elevation for node {node}")
+                G.nodes[node]["elevation"] = 0
+
+    # Assign elevations smartly to nodes
+    for node in G.nodes:
+        elev = get_elevation_smart(node, elevation_dict)
+        G.nodes[node]["elevation"] = elev
+
+    # Normalize elevation values for slope calculation
+    elevations = [G.nodes[node]["elevation"] for node in G.nodes]
+    min_elev = min(elevations) if elevations else 0
+    max_elev = max(elevations) if elevations else 0
+    elev_range = max_elev - min_elev if max_elev != min_elev else 1
+
+    # Assign normalized elevation to nodes
+    for node in G.nodes:
+        norm_elev = (G.nodes[node]["elevation"] - min_elev) / elev_range
+        G.nodes[node]["norm_elevation"] = norm_elev
+
+    # ⬅️ חשב ושמור slope לכל edge
+    for u, v in G.edges():
+        elev_u = G.nodes[u].get("norm_elevation", 0)
+        elev_v = G.nodes[v].get("norm_elevation", 0)
+        dist = G.edges[u, v].get("distance", haversine_distance(u, v))
+        if dist == 0:
+            slope = 0
+        else:
+            slope = abs(elev_v - elev_u) / dist
+        # Convert slope to degrees for consistency with other functions
+        slope_degrees = math.degrees(math.atan(slope))  # convert slope (rise/run) to degrees
+        G.edges[u, v]["slope"] = slope_degrees
+
+    # ⬅️ חיפוש במסלול לפי שיפוע מצטבר
     open_set = [(0, start, [start])]
     g_score = {start: 0}
     f_score = {start: 0}
     while open_set:
         _, current, path = heapq.heappop(open_set)
         if current == goal:
-            total_slope = sum(G.edges[u, v]["slope"] for u, v in zip(path[:-1], path[1:]) if G.has_edge(u, v))
-            print(f"✅ Found flattest path with total slope of {total_slope:.2f} degrees")
+            slopes = [G.edges[u, v]["slope"] for u, v in zip(path[:-1], path[1:]) if G.has_edge(u, v)]
+            for i, (u, v) in enumerate(zip(path[:-1], path[1:])):
+                if G.has_edge(u, v):
+                    print(f"↪️ Segment {i + 1}: {u} -> {v}, slope = {G.edges[u, v]['slope']:.2f}°")
+            if slopes:
+                max_slope_in_path = max(slopes)
+                print(f"✅ Found flattest path. Max segment slope: {max_slope_in_path:.2f}°, Total segments: {len(slopes)}")
+            else:
+                print("⚠️ No slopes found for path segments.")
             return path
+
         for neighbor in G.neighbors(current):
+            if "slope" not in G.edges[current, neighbor]:
+                continue  # אם אין שיפוע בקשת, דלג
             edge_slope = G.edges[current, neighbor]["slope"]
             if edge_slope > max_slope:
                 continue
@@ -73,8 +162,10 @@ def flattest_path(G, start, goal, max_slope=float('inf')):
                 g_score[neighbor] = tentative_g_score
                 f_score[neighbor] = tentative_g_score
                 heapq.heappush(open_set, (f_score[neighbor], neighbor, new_path))
+
     print(f"❌ No path found with slope <= {max_slope:.2f} degrees.")
     return None
+
 
 def merge_paths(shortest_path, flattest_path, G, node_data, start_node, goal_node):
     merged_graph = nx.Graph()
@@ -247,8 +338,13 @@ def get_merged_route(start_address, end_address, max_slope=float('inf')):
     else:
         print("✅ goal_node already in graph")
 
+    with open("elevation.json", "r") as f:
+        raw_elevation_data = json.load(f)
+
+    elevation_dict = {ast.literal_eval(k): v for k, v in raw_elevation_data.items()}
+
     shortest = shortest_path(G, start_node, goal_node)
-    flattest = flattest_path(G, start_node, goal_node, max_slope)
+    flattest = flattest_path(G, start_node, goal_node, max_slope,elevation_dict)
 
     if shortest and flattest:
         merged_graph = merge_paths(shortest, flattest, G, node_data, start_node, goal_node)

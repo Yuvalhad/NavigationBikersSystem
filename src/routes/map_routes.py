@@ -1,6 +1,6 @@
 from flask import Blueprint, render_template
 from db.DB import get_db_connection
-from work_calculate_ways.osm import osm_to_graph
+from work_calculate_ways.osm import osm_to_graph,fetch_osm_data_bbox
 import requests
 import json
 
@@ -30,23 +30,10 @@ def view_path(route_id):
     lon_min = min(start_lon, end_lon) - 0.01
     lon_max = max(start_lon, end_lon) + 0.01
 
-    # קריאה ל-Overpass API לקבלת נתוני OSM
-    overpass_url = "http://overpass-api.de/api/interpreter"
-    overpass_query = f"""
-    [out:json];
-    way["highway"]({lat_min},{lon_min},{lat_max},{lon_max});
-    out body;
-    >;
-    out skel qt;
-    """
-    try:
-        response = requests.post(overpass_url, data=overpass_query)
-        response.raise_for_status()
-        osm_data = response.json()
-    except requests.RequestException as e:
-        return f"שגיאה בקבלת נתוני OSM: {str(e)}", 500
+    osm_data = fetch_osm_data_bbox(lat_min, lon_min, lat_max, lon_max)
+    if not osm_data:
+     return "❌ Cant load Overpass API", 500
 
-    # בנה את ה-Graph
     G, node_data = osm_to_graph(osm_data)
 
     # המר את ה-Graph לפורמט JSON
@@ -76,4 +63,4 @@ def view_path(route_id):
                 "to": {"lat": lat2, "lon": lon2}
             })
 
-    return render_template('view_path.html', path_coords=path_coords, max_slope=route['max_slope'], total_slope=route['total_slope'], graph_data=graph_data)
+    return render_template('view_path.html', path_coords=path_coords, max_slope=route['max_slope'], graph_data=graph_data)

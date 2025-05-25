@@ -1,3 +1,5 @@
+import ast
+
 from flask import Blueprint, request, jsonify
 import mysql.connector
 from db.DB import get_db_connection
@@ -30,7 +32,7 @@ def register_user():
             return jsonify({"error": "Email already registered"}), 400
 
         cursor.execute("INSERT INTO users (email, name, password) VALUES (%s, %s, %s)",
-                       (email, name, hashed_password))
+                       (email, name, password))
         conn.commit()
         user_id = cursor.lastrowid
 
@@ -63,7 +65,7 @@ def login_user():
         user_id, stored_email, stored_password = user
         # בדיקה שהשם והסיסמה תואמים את אלה ששמורים במסד נתונים
         if email == stored_email and password == stored_password:
-            return jsonify({"message": "Login successful", "user_id": user_id, "email": email, "name": name}), 200
+            return jsonify({"message": "Login successful", "user_id": user_id, "email": email, "password": password}), 200
         else:
             return jsonify({"error": "Invalid name or password"}), 401
     except mysql.connector.Error as err:
@@ -137,8 +139,16 @@ def compute_path():
         conn.close()
         return jsonify({"error": "No path after simplification"}), 500
 
+    with open("elevation.json", "r") as f:
+        raw = json.load(f)
+
+    elevation_dict = {
+        ast.literal_eval(k): v
+        for k, v in raw.items()
+    }
+
     shortest = shortest_path(simplified_graph, start_node, end_node)
-    flattest = flattest_path(simplified_graph, start_node, end_node, max_slope)
+    flattest = flattest_path(simplified_graph, start_node, end_node, max_slope,elevation_dict)
 
     if not (shortest and flattest):
         cursor.close()
@@ -153,17 +163,15 @@ def compute_path():
         conn.close()
         return jsonify({"error": "No merged path found"}), 500
 
-    total_slope = sum(simplified_graph.edges[u, v]["slope"] for u, v in zip(final_path[:-1], final_path[1:]) if
-                      simplified_graph.has_edge(u, v))
 
     path_coords = [{"latitude": node_data[node]["latitude"], "longitude": node_data[node]["longitude"]}
                    for node in final_path]
 
     try:
         cursor.execute('''
-            INSERT INTO routes (start_lat, start_lon, end_lat, end_lon, user_id, max_slope, total_slope)
+            INSERT INTO routes (start_lat, start_lon, end_lat, end_lon, user_id, max_slope)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
-        ''', (start_lat, start_lon, end_lat, end_lon, user_id, max_slope, total_slope))
+        ''', (start_lat, start_lon, end_lat, end_lon, user_id, max_slope))
         route_id = cursor.lastrowid
 
         cursor.execute('''
@@ -183,7 +191,6 @@ def compute_path():
 
     return jsonify({
         "path": path_coords,
-        "total_slope": total_slope,
         "route_id": route_id,
-        "message": f"Path found with total slope of {total_slope:.2f} degrees"
+        "message": f"Path found with max slope of {max_slope:.2f} degrees"
     })
